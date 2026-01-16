@@ -1,0 +1,214 @@
+---
+title: "FINAL PROJECT"
+output: html_notebook
+---
+
+#1. install necessary libraries
+```{r}
+library(Seurat)
+library(dplyr)
+library(ggplot2)
+library(patchwork)
+
+options(future.globals.maxSize = 3 * 1024^3)  # Set to 3 GiB
+```
+
+
+#2 Load Control 10x Data
+```{r}
+control = Load10X_Spatial(
+     "/Users/cougerjaramillo/Desktop/MS/Intersession 2026/Applications/counts_and_images/1-1",
+     filename = "filtered_feature_bc_matrix.h5",
+     assay = "Spatial",
+     slice = "slice1",
+     bin.size = NULL,
+     filter.matrix = TRUE,
+     to.upper = FALSE,
+     image = NULL
+)
+# Set orig.ident of control to 0
+control@meta.data$orig.ident <- "0"
+SpatialFeaturePlot(control, features = "nCount_Spatial") + theme(legend.position = "right")
+control
+
+
+AD = Load10X_Spatial(
+     "/Users/cougerjaramillo/Desktop/MS/Intersession 2026/Applications/counts_and_images/2-8",
+     filename = "filtered_feature_bc_matrix.h5",
+     assay = "Spatial",
+     slice = "slice2",
+     bin.size = NULL,
+     filter.matrix = TRUE,
+     to.upper = FALSE,
+     image = NULL
+ )
+# Set orig.ident of AD to 1
+AD@meta.data$orig.ident <- "1"
+SpatialFeaturePlot(AD, features = "nCount_Spatial") + theme(legend.position = "right")
+AD
+```
+
+
+#3. Pre-processing
+```{r}
+#control
+#Mitochondrial DNA counts
+control[["percent.mt"]] <- PercentageFeatureSet(control, pattern = "^MT-")#
+#Visualize
+VlnPlot(control, features = c("nFeature_Spatial", "nCount_Spatial", "percent.mt"), ncol = 3)
+plot1 <- FeatureScatter(control, feature1 = "nCount_Spatial", feature2 = "percent.mt")
+plot2 <- FeatureScatter(control, feature1 = "nCount_Spatial", feature2 = "nFeature_Spatial")
+plot1 + plot2
+#Subset for high quality data
+control <- subset(control, subset = nFeature_Spatial > 500 & nFeature_Spatial < 6000 & percent.mt < 40)
+VlnPlot(control, features = c("nFeature_Spatial", "nCount_Spatial", "percent.mt"), ncol = 3)
+#Log normalize
+control <- NormalizeData(control, normalization.method = "LogNormalize", scale.factor = 10000)
+#Feature Selection
+control <- FindVariableFeatures(control, selection.method = "vst", nfeatures = 2000)
+# Identify the 10 most highly variable genes
+top10 <- head(VariableFeatures(control), 10)
+# plot variable features with and without labels
+plot1 <- VariableFeaturePlot(control)
+plot2 <- LabelPoints(plot = plot1, points = top10, repel = TRUE)
+plot1 + plot2
+#Scale Data
+all.genes <- rownames(control)
+control <- ScaleData(control, features = all.genes)
+#check final object for QC
+control
+
+
+#AD
+#Mitochondrial DNA counts
+AD[["percent.mt"]] <- PercentageFeatureSet(AD, pattern = "^MT-")#
+#Visualize
+VlnPlot(AD, features = c("nFeature_Spatial", "nCount_Spatial", "percent.mt"), ncol = 3)
+plot1 <- FeatureScatter(AD, feature1 = "nCount_Spatial", feature2 = "percent.mt")
+plot2 <- FeatureScatter(AD, feature1 = "nCount_Spatial", feature2 = "nFeature_Spatial")
+plot1 + plot2
+#Subset for high quality data
+AD <- subset(AD, subset = nFeature_Spatial > 500 & nFeature_Spatial < 6000 & percent.mt < 40)
+VlnPlot(AD, features = c("nFeature_Spatial", "nCount_Spatial", "percent.mt"), ncol = 3)
+#Log normalize
+AD <- NormalizeData(AD, normalization.method = "LogNormalize", scale.factor = 10000)
+#Feature Selection
+AD <- FindVariableFeatures(AD, selection.method = "vst", nfeatures = 2000)
+# Identify the 10 most highly variable genes
+top10 <- head(VariableFeatures(AD), 10)
+# plot variable features with and without labels
+plot1 <- VariableFeaturePlot(AD)
+plot2 <- LabelPoints(plot = plot1, points = top10, repel = TRUE)
+plot1 + plot2
+#Scale Data
+all.genes <- rownames(AD)
+AD <- ScaleData(AD, features = all.genes)
+#check final object for QC
+AD
+```
+
+
+#4. Merge the control & AD 
+```{r}
+#Merging Slices
+brain.merge <- merge(control, AD, project = "brain")
+#VariableFeatures(brain.merge) <- c(VariableFeatures(control), VariableFeatures(AD))
+#Re-Scale Data
+all.genes <- rownames(brain.merge)
+brain.merge <- ScaleData(brain.merge, features = all.genes)
+#Visualize Results
+plot1 <- VlnPlot(brain.merge, features = "nCount_Spatial", pt.size = 0.1) + NoLegend()
+plot2 <- SpatialFeaturePlot(brain.merge, features = "nCount_Spatial") + theme(legend.position = "right")
+wrap_plots(plot1, plot2)
+```
+
+
+#5 # Dimensionality reduction, clustering, and visualization
+```{r}
+
+#PCA
+brain.merge <- RunPCA(brain.merge, assay = "Spatial", verbose = FALSE)
+VizDimLoadings(brain.merge, dims = 1:2, reduction = "pca")
+DimPlot(brain.merge, reduction = "pca") + NoLegend()
+ElbowPlot(brain.merge, ndims = 50)
+#Clustering
+brain.merge <- FindNeighbors(brain.merge, reduction = "pca", dims = 1:30)
+brain.merge <- FindClusters(brain.merge, resolution = 1, verbose = FALSE)
+brain.merge <- RunUMAP(brain.merge, reduction = "pca", dims = 1:30)
+DimPlot(brain.merge, reduction = "umap", group.by = c("ident", "orig.ident"))
+SpatialDimPlot(brain.merge, label = TRUE, label.size = 3)
+```
+
+
+#6 Identifying Cortical Layers by Heatmpap of canonical markers
+```{r}
+# Define the list of known markers organized by layer
+known_markers_list <- list(
+    Layer1 = c("SPARC", "MALAT1", "CXCL14", "ADIRF"),
+    Layer2 = c("ENC1", "HPCAL1", "CALB2"),
+    Layer3 = c("HOPX"),
+    Layer4 = c("RORB", "NUAK1"),
+    Layer5 = c("TUBA1B", "TMSB10", "SYT1", "STMN2", "MAP1B", "SNAP25", "PCP4", "UCHL1", "CLSTN2", "SNCG", "SMYD2", "RTN1", "STMN1", "RTN3", "NEFL", "SNRPN", "BASP1", "SYN2", "CALM3", "ENO2", "SNCA", "GAP43", "NAPB", "ELAVL4", "FXYD6", "NDRG4", "NRSN1", "RAB3C", "UHMK1", "SNAP91", "ATP6V1B2", "SLC25A22"),
+    Layer6 = c("MAP2K1", "DIRAS2", "KRT17"),
+    LayerWM = c("MBP", "MOBP", "CLDND1", "BCAS1", "MTURN", "PAQR6", "HIPK2", "DYNC1LI2") 
+)
+# Combine all markers into a single vector and create a corresponding layer vector
+combined_markers <- unlist(known_markers_list)
+layer_labels <- rep(names(known_markers_list), times = sapply(known_markers_list, length))
+# Ensure combined markers exist in the Seurat object
+valid_markers <- combined_markers[combined_markers %in% rownames(brain.merge)]
+valid_layer_labels <- layer_labels[combined_markers %in% rownames(brain.merge)]
+# Check if we have valid markers before plotting
+if (length(valid_markers) > 0) {
+    # Create a named vector for y-axis annotations
+    names(valid_layer_labels) <- valid_markers
+    
+    # Generate the heatmap
+    heatmap_plot <- DoHeatmap(brain.merge, features = valid_markers) + 
+        NoLegend() + 
+        scale_y_discrete(labels = valid_layer_labels) +  # Update y-axis labels
+        ggtitle("Combined Heatmap of Known Markers by Layer")  # Title for the heatmap
+    
+    # Display the heatmap
+    print(heatmap_plot)
+} else {
+    cat("No valid markers found for heatmap generation.\n")
+}
+```
+
+
+#7. Subset the Data by Region
+```{r}
+#Subset out anatomical regions
+## Subset to clusters of interest
+WM <- subset(brain.merge, idents = c(3, 7))
+
+# Extract and attach spatial coordinates from image 1
+centroids <- WM[["slice1"]]@boundaries$centroids
+coords <- setNames(as.data.frame(centroids@coords), c("x", "y"))
+rownames(coords) <- centroids@cells
+WM$x <- coords[colnames(WM), "x"]
+WM$y <- coords[colnames(WM), "y"]
+
+# After subsetting, we renormalize WM
+WN <- NormalizeData(WM, normalization.method = "LogNormalize", scale.factor = 10000)
+WM <- RunPCA(WM, verbose = FALSE)
+SpatialDimPlot(WM, label = TRUE, label.size = 3)
+```
+
+
+#8 WM DEGs
+```{r}
+# Join Layers
+WM <- JoinLayers(WM)
+
+# Set the identity classes based on the 'orig.ident' column
+WM <- SetIdent(WM, value = WM$orig.ident)
+
+
+# Compare cells with orig.ident values of 0 and 1
+WM.AD.markers <- FindMarkers(WM, ident.1 = 0, ident.2 = 1)
+
+# View the results
+head(WM.AD.markers)
+```
